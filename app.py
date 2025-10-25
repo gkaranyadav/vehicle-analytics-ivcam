@@ -40,18 +40,32 @@ class VehicleAnalyticsSystem:
         self.vehicles_data = []
         self.other_objects_data = []
         
-    def connect_ivcam(self, camera_url):
-        """Connect to IVCam stream"""
+    def connect_ivcam(self, camera_input):
+        """Enhanced iVCam connection - supports both URLs and camera indexes"""
         try:
-            cap = cv2.VideoCapture(camera_url)
+            # If it's a number, treat as camera index (for iVCam virtual camera)
+            if camera_input.isdigit():
+                cap = cv2.VideoCapture(int(camera_input))
+                camera_type = f"Camera Index {camera_input}"
+            else:
+                # Try as URL (for IP cameras)
+                cap = cv2.VideoCapture(camera_input)
+                camera_type = f"URL {camera_input}"
+            
             if cap.isOpened():
-                return True, "✅ IVCam Connected Successfully!", cap
-            return False, "❌ Failed to connect to IVCam", None
+                # Test if we can actually read a frame
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    return True, f"✅ Connected to {camera_type}", cap
+                else:
+                    cap.release()
+                    return False, "❌ Camera connected but no video feed", None
+            return False, "❌ Cannot access camera", None
         except Exception as e:
-            return False, f"❌ IVCam Error: {e}", None
+            return False, f"❌ Camera Error: {e}", None
     
     def capture_frame(self, cap):
-        """Capture frame from IVCam"""
+        """Capture frame from camera"""
         if cap and cap.isOpened():
             ret, frame = cap.read()
             return frame if ret else None
@@ -98,18 +112,51 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.header("⚙️ IVCam Settings")
-        camera_url = st.text_input("IVCam Stream URL", "http://192.168.1.5:8080/video")
+        st.header("⚙️ Camera Settings")
         
-        if st.button("🔗 Connect IVCam", type="primary"):
-            with st.spinner("Connecting to IVCam..."):
-                success, message, cap = system.connect_ivcam(camera_url)
-                if success:
-                    st.session_state.ivcam_connected = True
-                    st.session_state.cap = cap
-                    st.success(message)
-                else:
-                    st.error(message)
+        # Camera type selection
+        camera_type = st.selectbox(
+            "Select Camera Type",
+            ["iVCam (Virtual Camera)", "IP Camera", "Local Webcam"]
+        )
+        
+        if camera_type == "iVCam (Virtual Camera)":
+            camera_input = st.text_input("iVCam Camera Index", "1", 
+                                       help="Try 0, 1, or 2 - iVCam usually appears as camera 1")
+        elif camera_type == "IP Camera":
+            camera_input = st.text_input("IP Camera URL", "http://192.168.1.5:8080/video")
+        else:  # Local Webcam
+            camera_input = st.text_input("Webcam Index", "0", 
+                                       help="0 for default webcam, 1 for secondary")
+        
+        # Camera tester
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔗 Connect Camera", type="primary"):
+                with st.spinner("Connecting to camera..."):
+                    success, message, cap = system.connect_ivcam(camera_input)
+                    if success:
+                        st.session_state.ivcam_connected = True
+                        st.session_state.cap = cap
+                        st.success(message)
+                        
+                        # Show preview
+                        ret, frame = cap.read()
+                        if ret:
+                            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                            st.image(frame_rgb, caption="Camera Preview", use_column_width=True)
+                    else:
+                        st.error(message)
+        
+        with col2:
+            if st.button("🔄 Test Camera"):
+                with st.spinner("Testing camera..."):
+                    success, message, cap = system.connect_ivcam(camera_input)
+                    if success:
+                        st.success(message)
+                        cap.release()
+                    else:
+                        st.error(message)
         
         st.header("📊 Controls")
         col1, col2 = st.columns(2)
@@ -144,16 +191,18 @@ def main():
                     health_data = response.json()
                     st.success("✅ Databricks API Connected!")
                     st.write(f"Detections Processed: {health_data.get('detections_processed', 0)}")
+                    st.write(f"Vehicles Stored: {health_data.get('vehicles_stored', 0)}")
+                    st.write(f"HF Space: {health_data.get('hf_space_url', 'Connected')}")
                 else:
                     st.error("❌ Databricks API Connection Failed")
             except Exception as e:
                 st.error(f"❌ Connection Error: {e}")
     
     # Main content - Tabs
-    tab1, tab2, tab3 = st.tabs(["🎥 Live IVCam", "📊 Analytics", "📁 Image Upload"])
+    tab1, tab2, tab3 = st.tabs(["🎥 Live Camera", "📊 Analytics", "📁 Image Upload"])
     
     with tab1:
-        st.header("Live IVCam Stream")
+        st.header("Live Camera Stream")
         
         if st.session_state.ivcam_connected:
             # Live stream settings
@@ -165,14 +214,18 @@ def main():
                 results_placeholder = st.empty()
                 
                 last_detection_time = 0
+                frame_count = 0
                 
                 # Live detection loop
                 while st.session_state.detection_active and st.session_state.ivcam_connected:
                     frame = system.capture_frame(st.session_state.cap)
                     if frame is not None:
+                        frame_count += 1
+                        
                         # Display live stream
                         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        stream_placeholder.image(frame_rgb, channels="RGB", use_column_width=True, caption="Live IVCam Stream")
+                        stream_placeholder.image(frame_rgb, channels="RGB", use_column_width=True, 
+                                               caption=f"Live Stream - Frame: {frame_count}")
                         
                         # Auto-detection
                         current_time = time.time()
@@ -186,7 +239,7 @@ def main():
                                     img_bytes = img_encoded.tobytes()
                                     
                                     # Send to Databricks
-                                    result = system.send_to_databricks(img_bytes, "ivcam_live")
+                                    result = system.send_to_databricks(img_bytes, "live_camera")
                                     
                                     if result and result.get('success'):
                                         vehicles = result['detections']['vehicles']
@@ -225,12 +278,31 @@ def main():
                                                             st.write(f"**Size:** {obj.get('size_category', 'Unknown')}")
                                                         if i < len(objects) - 1:
                                                             st.divider()
+                                        else:
+                                            st.info("👀 No objects detected in this frame")
                     
                     time.sleep(0.1)
             else:
                 st.info("⏸️ Detection paused. Click 'Start Detection' to begin real-time analysis.")
         else:
-            st.info("👆 Connect IVCam to start live detection")
+            st.info("👆 Connect your camera to start live detection")
+            
+            # Camera troubleshooting guide
+            with st.expander("📋 Camera Connection Guide"):
+                st.write("""
+                **For iVCam Users:**
+                - Make sure iVCam app is running on both phone and PC
+                - Try camera indexes: **1** (most common), **0**, or **2**
+                - Check if iVCam appears in Windows Camera app
+                
+                **For IP Cameras:**
+                - Use format: `http://192.168.1.5:8080/video`
+                - Ensure phone/computer on same WiFi
+                
+                **For Webcams:**
+                - Use **0** for default webcam
+                - Use **1** for secondary webcam
+                """)
     
     with tab2:
         st.header("Analytics Dashboard")
