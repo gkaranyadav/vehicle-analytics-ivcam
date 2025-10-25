@@ -36,7 +36,7 @@ st.markdown("""
 class VehicleAnalyticsSystem:
     def __init__(self):
         # Your Databricks API URL
-        self.DATABRICKS_API_URL = "https://dbc-484c2988-d6e6.cloud.databricks.com/driver-proxy-api/o/0/5000"
+        self.DATABRICKS_API_URL = "https://dbc-484c2988-d6e6.cloud.databricks.com/driver-proxy-api/o/0/5003"
         self.vehicles_data = []
         self.other_objects_data = []
         
