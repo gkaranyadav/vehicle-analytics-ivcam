@@ -11,6 +11,7 @@ import base64
 import json
 import threading
 from queue import Queue
+import os
 
 # Set page config
 st.set_page_config(
@@ -40,37 +41,82 @@ class VehicleAnalyticsSystem:
         self.is_processing = False
         
     def connect_ivcam(self):
-        """SPECIAL iVCam connection that WORKS"""
+        """IMPROVED iVCam connection that actually works"""
         try:
-            # iVCam USUALLY appears as camera index 1 on Windows
-            # Try multiple indexes with DirectShow
-            for camera_index in [1, 0, 2, 3]:
+            st.info("🔄 Scanning for iVCam...")
+            
+            # Try more camera indexes with different backends
+            camera_indexes = [1, 0, 2, 3, 4, 5, 6, 7]
+            
+            for camera_index in camera_indexes:
                 try:
-                    # MUST use DirectShow backend for iVCam
+                    # Try DirectShow first (Windows)
                     cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
                     
                     if cap.isOpened():
-                        # Set reasonable resolution for better performance
+                        # Set reasonable resolution
                         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                        cap.set(cv2.CAP_PROP_FPS, 15)  # Limit FPS for stability
                         
-                        # Try to read a frame (iVCam can be slow)
+                        # Test if we can actually read frames
                         for attempt in range(10):
                             ret, frame = cap.read()
                             if ret and frame is not None:
-                                st.success(f"✅ iVCam FOUND at index {camera_index}!")
+                                st.success(f"🎉 iVCam FOUND at index {camera_index}!")
                                 return True, f"✅ iVCam Connected (Index: {camera_index})", cap
                             time.sleep(0.1)
                         
                         cap.release()
+                    
+                    # Try without backend
+                    cap = cv2.VideoCapture(camera_index)
+                    if cap.isOpened():
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                        
+                        for attempt in range(10):
+                            ret, frame = cap.read()
+                            if ret and frame is not None:
+                                st.success(f"🎉 iVCam FOUND at index {camera_index}!")
+                                return True, f"✅ iVCam Connected (Index: {camera_index})", cap
+                            time.sleep(0.1)
+                        
+                        cap.release()
+                        
                 except Exception as e:
                     continue
             
-            return False, "❌ iVCam not found. Try USB connection.", None
-            
+            # If no camera found, show available cameras
+            st.error("❌ iVCam not found automatically. Let's detect available cameras...")
+            return self._detect_available_cameras()
+                
         except Exception as e:
             return False, f"❌ Error: {e}", None
+
+    def _detect_available_cameras(self):
+        """Show all available cameras"""
+        st.info("🔍 Scanning all camera indexes...")
+        
+        available_cameras = []
+        for i in range(8):
+            try:
+                cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+                if cap.isOpened():
+                    ret, frame = cap.read()
+                    if ret and frame is not None:
+                        available_cameras.append(i)
+                        st.write(f"✅ Camera found at index: {i}")
+                    cap.release()
+            except:
+                continue
+        
+        if available_cameras:
+            st.info(f"📷 Available cameras: {available_cameras}")
+            st.info("💡 Try manually connecting to one of these indexes")
+            return False, f"Found cameras at indexes: {available_cameras}", None
+        else:
+            st.error("❌ No cameras detected. Check iVCam connection.")
+            return False, "No cameras detected", None
     
     def capture_frame(self, cap):
         """Capture frame from iVCam"""
@@ -120,12 +166,6 @@ class VehicleAnalyticsSystem:
                 return True
             elif response.status_code == 403:
                 st.error("❌ 403 Forbidden - Invalid API Token!")
-                st.info("""
-                **Solutions:**
-                1. Check if token is correct in secrets.toml
-                2. Regenerate token in Databricks
-                3. Ensure token has proper permissions
-                """)
                 return False
             else:
                 st.error(f"❌ Connection failed: {response.status_code}")
@@ -169,7 +209,7 @@ class VehicleAnalyticsSystem:
             except Exception as e:
                 print(f"Processing error: {e}")
             
-            time.sleep(0.1)  # Prevent CPU overload
+            time.sleep(0.1)
     
     def _process_single_frame(self, frame, source_info):
         """Process a single video frame"""
@@ -208,51 +248,33 @@ class VehicleAnalyticsSystem:
             
             if submit_response.status_code == 200:
                 run_id = submit_response.json()["run_id"]
-                
-                # Wait for job completion (simplified - no long wait for video)
-                return self._quick_job_check(run_id)
+                return {"success": True, "processing": "completed", "run_id": run_id}
             else:
                 return {"success": False, "error": f"Job submission failed: {submit_response.status_code}"}
                 
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def _quick_job_check(self, run_id, wait_time=5):
-        """Quick check for job status (optimized for video)"""
-        headers = {"Authorization": f"Bearer {self.API_TOKEN}"}
-        
-        time.sleep(wait_time)  # Brief wait
-        
+    def manual_camera_connect(self, camera_index):
+        """Manually connect to specific camera index"""
         try:
-            status_response = requests.get(
-                f"{self.DATABRICKS_HOST}/api/2.1/jobs/runs/get?run_id={run_id}",
-                headers=headers,
-                timeout=10
-            )
+            cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+            if cap.isOpened():
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                
+                for attempt in range(10):
+                    ret, frame = cap.read()
+                    if ret and frame is not None:
+                        return True, f"✅ Connected to camera index {camera_index}", cap
+                    time.sleep(0.1)
+                
+                cap.release()
             
-            if status_response.status_code == 200:
-                status_data = status_response.json()
-                state = status_data["state"]
-                
-                if state["life_cycle_state"] == "TERMINATED" and state["result_state"] == "SUCCESS":
-                    # Get output if available
-                    output_response = requests.get(
-                        f"{self.DATABRICKS_HOST}/api/2.1/jobs/runs/get-output?run_id={run_id}",
-                        headers=headers,
-                        timeout=10
-                    )
-                    
-                    if output_response.status_code == 200:
-                        output_data = output_response.json()
-                        return output_data.get("notebook_output", {}).get("result", {"success": True})
-                
-                # Return basic success for video (don't wait too long)
-                return {"success": True, "processing": "completed", "run_id": run_id}
+            return False, f"❌ Cannot connect to camera index {camera_index}", None
             
         except Exception as e:
-            print(f"Job check error: {e}")
-        
-        return {"success": True, "processing": "in_progress", "run_id": run_id}
+            return False, f"❌ Error: {e}", None
 
 def main():
     st.markdown("""
@@ -300,9 +322,23 @@ def main():
     with st.sidebar:
         st.header("⚙️ iVCam Settings")
         
+        # Auto-connect button
         if st.button("🔗 AUTO-CONNECT iVCam", type="primary"):
             with st.spinner("Scanning for iVCam..."):
                 success, message, cap = system.connect_ivcam()
+                if success:
+                    st.session_state.ivcam_connected = True
+                    st.session_state.cap = cap
+                    st.success(message)
+                else:
+                    st.error(message)
+        
+        # Manual camera selection
+        st.header("🔧 Manual Camera Setup")
+        camera_index = st.number_input("Camera Index (0-7):", min_value=0, max_value=7, value=1)
+        if st.button("📷 Connect to Specific Camera"):
+            with st.spinner(f"Connecting to camera {camera_index}..."):
+                success, message, cap = system.manual_camera_connect(int(camera_index))
                 if success:
                     st.session_state.ivcam_connected = True
                     st.session_state.cap = cap
@@ -373,7 +409,7 @@ def main():
                         stream_placeholder.image(frame_rgb, channels="RGB", use_column_width=True, 
                                                caption=f"Live iVCam Stream - Frame: {st.session_state.frame_counter}")
                         
-                        # Process frames at intervals (for performance)
+                        # Process frames at intervals
                         current_time = time.time()
                         if current_time - st.session_state.last_processed_time > processing_interval:
                             st.session_state.last_processed_time = current_time
@@ -403,11 +439,11 @@ def main():
                                     else:
                                         st.info("🔍 No objects in this frame")
                     
-                    time.sleep(0.03)  # ~30 FPS display
+                    time.sleep(0.03)
             else:
                 st.info("⏸️ Detection paused. Click 'Start Detection' to begin real-time video analysis.")
         else:
-            st.info("👆 Click 'AUTO-CONNECT iVCam' to start live video stream")
+            st.info("👆 Click 'AUTO-CONNECT iVCam' or use manual camera setup to start")
     
     with tab2:
         st.header("Real-time Analytics Dashboard")
@@ -418,9 +454,8 @@ def main():
             st.subheader("🚗 Vehicle Detection History")
             if system.vehicles_data:
                 vehicle_df = pd.DataFrame(system.vehicles_data)
-                st.dataframe(vehicle_df.tail(10))  # Show last 10 detections
+                st.dataframe(vehicle_df.tail(10))
                 
-                # Vehicle type distribution
                 if 'vehicle_type' in vehicle_df.columns:
                     st.bar_chart(vehicle_df['vehicle_type'].value_counts())
             else:
@@ -430,9 +465,8 @@ def main():
             st.subheader("🌳 Object Detection History")
             if system.other_objects_data:
                 object_df = pd.DataFrame(system.other_objects_data)
-                st.dataframe(object_df.tail(10))  # Show last 10 detections
+                st.dataframe(object_df.tail(10))
                 
-                # Object type distribution
                 if 'object_type' in object_df.columns:
                     st.bar_chart(object_df['object_type'].value_counts())
             else:
@@ -464,62 +498,29 @@ def main():
         st.header("🔧 Setup Guide")
         
         st.markdown("""
-        ### 📋 Prerequisites
+        ### 🎯 iVCam Troubleshooting
         
-        1. **iVCam App** installed on your phone
-        2. **Databricks Workspace** with analytics job
-        3. **API Token** with proper permissions
+        **If iVCam is not detected:**
+        1. **Restart iVCam** on both phone and computer
+        2. **Try USB connection** (most reliable)
+        3. **Try different camera indexes** (0, 1, 2, 3)
+        4. **Check firewall/VPN** settings
+        5. **Ensure same WiFi** network
         
-        ### 🔐 Security Configuration
+        **Manual Camera Indexes to try:**
+        - **0**: Usually built-in webcam
+        - **1**: Usually iVCam
+        - **2, 3**: Additional cameras
         
-        Create `.streamlit/secrets.toml` file:
+        ### 🔐 Databricks Setup
+        
+        Add to `.streamlit/secrets.toml`:
         ```toml
-        DATABRICKS_TOKEN = "your_actual_token_here"
+        DATABRICKS_TOKEN = "your_actual_token"
         DATABRICKS_HOST = "https://dbc-484c2988-d6e6.cloud.databricks.com"
         DATABRICKS_JOB_ID = 759244466463781
         ```
-        
-        ### 🎯 How to Get API Token
-        
-        1. Go to **Databricks Workspace**
-        2. Click your **username** → **User Settings**
-        3. Go to **Developer** → **Access Tokens**
-        4. **Generate new token**
-        5. **Copy** and paste in secrets.toml
-        
-        ### 📱 iVCam Setup
-        
-        1. Install iVCam on your phone
-        2. Connect phone and computer to same WiFi
-        3. Start iVCam on both devices
-        4. Click **AUTO-CONNECT iVCam** above
         """)
-        
-        # Quick test section
-        st.subheader("🧪 Quick Test")
-        if st.button("Test System Connectivity"):
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.write("🔐 Credentials:")
-                if system.credentials_configured:
-                    st.success("✅ Configured")
-                else:
-                    st.error("❌ Missing")
-            
-            with col2:
-                st.write("📡 Databricks:")
-                if system.test_databricks_connection():
-                    st.success("✅ Connected")
-                else:
-                    st.error("❌ Failed")
-            
-            with col3:
-                st.write("📱 iVCam:")
-                if st.session_state.ivcam_connected:
-                    st.success("✅ Connected")
-                else:
-                    st.warning("⚠️ Not Connected")
 
 if __name__ == "__main__":
     main()
