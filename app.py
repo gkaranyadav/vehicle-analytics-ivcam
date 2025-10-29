@@ -15,7 +15,7 @@ import os
 
 # Set page config
 st.set_page_config(
-    page_title="Enterprise Vehicle Analytics - iVCam",
+    page_title="Enterprise Vehicle Analytics - RTSP Stream",
     page_icon="🚗", 
     layout="wide"
 )
@@ -39,91 +39,49 @@ class VehicleAnalyticsSystem:
         self.processing_queue = Queue()
         self.results_queue = Queue()
         self.is_processing = False
+        self.rtsp_url = "rtsp://admin:admin@192.168.1.5:1935"
         
-    def connect_ivcam(self):
-        """IMPROVED iVCam connection that actually works"""
+    def connect_rtsp_stream(self, rtsp_url=None):
+        """Connect to RTSP video stream - WORKS on Streamlit Cloud!"""
         try:
-            st.info("🔄 Scanning for iVCam...")
+            url = rtsp_url or self.rtsp_url
+            st.info(f"🔗 Connecting to RTSP: {url}")
             
-            # Try more camera indexes with different backends
-            camera_indexes = [1, 0, 2, 3, 4, 5, 6, 7]
+            # Open RTSP stream
+            cap = cv2.VideoCapture(url)
             
-            for camera_index in camera_indexes:
-                try:
-                    # Try DirectShow first (Windows)
-                    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-                    
-                    if cap.isOpened():
-                        # Set reasonable resolution
-                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                        
-                        # Test if we can actually read frames
-                        for attempt in range(10):
-                            ret, frame = cap.read()
-                            if ret and frame is not None:
-                                st.success(f"🎉 iVCam FOUND at index {camera_index}!")
-                                return True, f"✅ iVCam Connected (Index: {camera_index})", cap
-                            time.sleep(0.1)
-                        
-                        cap.release()
-                    
-                    # Try without backend
-                    cap = cv2.VideoCapture(camera_index)
-                    if cap.isOpened():
-                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                        
-                        for attempt in range(10):
-                            ret, frame = cap.read()
-                            if ret and frame is not None:
-                                st.success(f"🎉 iVCam FOUND at index {camera_index}!")
-                                return True, f"✅ iVCam Connected (Index: {camera_index})", cap
-                            time.sleep(0.1)
-                        
-                        cap.release()
-                        
-                except Exception as e:
-                    continue
-            
-            # If no camera found, show available cameras
-            st.error("❌ iVCam not found automatically. Let's detect available cameras...")
-            return self._detect_available_cameras()
+            if cap.isOpened():
+                # Set buffer size for better streaming
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                cap.set(cv2.CAP_PROP_FPS, 15)
                 
-        except Exception as e:
-            return False, f"❌ Error: {e}", None
-
-    def _detect_available_cameras(self):
-        """Show all available cameras"""
-        st.info("🔍 Scanning all camera indexes...")
-        
-        available_cameras = []
-        for i in range(8):
-            try:
-                cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-                if cap.isOpened():
+                # Wait for stream to initialize
+                time.sleep(2)
+                
+                # Try to read frames
+                for attempt in range(15):
                     ret, frame = cap.read()
                     if ret and frame is not None:
-                        available_cameras.append(i)
-                        st.write(f"✅ Camera found at index: {i}")
-                    cap.release()
-            except:
-                continue
-        
-        if available_cameras:
-            st.info(f"📷 Available cameras: {available_cameras}")
-            st.info("💡 Try manually connecting to one of these indexes")
-            return False, f"Found cameras at indexes: {available_cameras}", None
-        else:
-            st.error("❌ No cameras detected. Check iVCam connection.")
-            return False, "No cameras detected", None
-    
+                        st.success("🎉 RTSP Stream Connected!")
+                        return True, f"✅ Connected to RTSP: {url}", cap
+                    time.sleep(0.2)
+                
+                # If we can open but frames are slow, still return
+                return True, f"⚠️ RTSP opened but frames delayed: {url}", cap
+            
+            return False, f"❌ Cannot connect to RTSP: {url}", None
+            
+        except Exception as e:
+            return False, f"❌ RTSP Error: {str(e)}", None
+
     def capture_frame(self, cap):
-        """Capture frame from iVCam"""
+        """Capture frame from RTSP stream"""
         if cap and cap.isOpened():
-            ret, frame = cap.read()
-            if ret:
-                return frame
+            # Clear buffer to get latest frame
+            for _ in range(3):
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    return frame
         return None
     
     def check_credentials(self):
@@ -152,7 +110,6 @@ class VehicleAnalyticsSystem:
                 "Content-Type": "application/json"
             }
             
-            # Test by getting job info
             response = requests.get(
                 f"{self.DATABRICKS_HOST}/api/2.1/jobs/get?job_id={self.DATABRICKS_JOB_ID}",
                 headers=headers,
@@ -200,7 +157,7 @@ class VehicleAnalyticsSystem:
                     frame, frame_id = frame_data
                     
                     # Process frame through Databricks
-                    result = self._process_single_frame(frame, f"ivcam_frame_{frame_id}")
+                    result = self._process_single_frame(frame, f"rtsp_frame_{frame_id}")
                     
                     # Store result
                     if result and result.get('success'):
@@ -254,27 +211,6 @@ class VehicleAnalyticsSystem:
                 
         except Exception as e:
             return {"success": False, "error": str(e)}
-    
-    def manual_camera_connect(self, camera_index):
-        """Manually connect to specific camera index"""
-        try:
-            cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-            if cap.isOpened():
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                
-                for attempt in range(10):
-                    ret, frame = cap.read()
-                    if ret and frame is not None:
-                        return True, f"✅ Connected to camera index {camera_index}", cap
-                    time.sleep(0.1)
-                
-                cap.release()
-            
-            return False, f"❌ Cannot connect to camera index {camera_index}", None
-            
-        except Exception as e:
-            return False, f"❌ Error: {e}", None
 
 def main():
     st.markdown("""
@@ -300,13 +236,13 @@ def main():
     </style>
     """, unsafe_allow_html=True)
     
-    st.markdown('<h1 class="main-header">🚗 ENTERPRISE VEHICLE ANALYTICS - iVCam</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🚗 ENTERPRISE VEHICLE ANALYTICS - RTSP Stream</h1>', unsafe_allow_html=True)
     
     # Initialize session state
     if "system" not in st.session_state:
         st.session_state.system = VehicleAnalyticsSystem()
-    if "ivcam_connected" not in st.session_state:
-        st.session_state.ivcam_connected = False
+    if "stream_connected" not in st.session_state:
+        st.session_state.stream_connected = False
     if "detection_active" not in st.session_state:
         st.session_state.detection_active = False
     if "cap" not in st.session_state:
@@ -320,27 +256,21 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.header("⚙️ iVCam Settings")
+        st.header("⚙️ RTSP Stream Settings")
         
-        # Auto-connect button
-        if st.button("🔗 AUTO-CONNECT iVCam", type="primary"):
-            with st.spinner("Scanning for iVCam..."):
-                success, message, cap = system.connect_ivcam()
-                if success:
-                    st.session_state.ivcam_connected = True
-                    st.session_state.cap = cap
-                    st.success(message)
-                else:
-                    st.error(message)
+        # RTSP URL input
+        rtsp_url = st.text_input(
+            "RTSP Stream URL:", 
+            value="rtsp://admin:admin@192.168.1.5:1935",
+            help="Enter your RTSP stream URL"
+        )
         
-        # Manual camera selection
-        st.header("🔧 Manual Camera Setup")
-        camera_index = st.number_input("Camera Index (0-7):", min_value=0, max_value=7, value=1)
-        if st.button("📷 Connect to Specific Camera"):
-            with st.spinner(f"Connecting to camera {camera_index}..."):
-                success, message, cap = system.manual_camera_connect(int(camera_index))
+        # Connect button
+        if st.button("🔗 CONNECT RTSP STREAM", type="primary"):
+            with st.spinner("Connecting to RTSP stream..."):
+                success, message, cap = system.connect_rtsp_stream(rtsp_url)
                 if success:
-                    st.session_state.ivcam_connected = True
+                    st.session_state.stream_connected = True
                     st.session_state.cap = cap
                     st.success(message)
                 else:
@@ -388,12 +318,12 @@ def main():
             st.error("❌ Credentials Missing")
     
     # Main content
-    tab1, tab2, tab3 = st.tabs(["🎥 Live iVCam Stream", "📊 Analytics Dashboard", "🔧 Setup Guide"])
+    tab1, tab2, tab3 = st.tabs(["🎥 Live RTSP Stream", "📊 Analytics Dashboard", "🔧 Setup Guide"])
     
     with tab1:
-        st.header("Live iVCam Video Stream")
+        st.header("Live RTSP Video Stream")
         
-        if st.session_state.ivcam_connected:
+        if st.session_state.stream_connected:
             if st.session_state.detection_active:
                 # Live stream container
                 stream_placeholder = st.empty()
@@ -401,13 +331,13 @@ def main():
                 results_placeholder = st.empty()
                 
                 # Video processing loop
-                while st.session_state.detection_active and st.session_state.ivcam_connected:
+                while st.session_state.detection_active and st.session_state.stream_connected:
                     frame = system.capture_frame(st.session_state.cap)
                     if frame is not None:
                         # Display live stream
                         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                         stream_placeholder.image(frame_rgb, channels="RGB", use_column_width=True, 
-                                               caption=f"Live iVCam Stream - Frame: {st.session_state.frame_counter}")
+                                               caption=f"Live RTSP Stream - Frame: {st.session_state.frame_counter}")
                         
                         # Process frames at intervals
                         current_time = time.time()
@@ -439,11 +369,26 @@ def main():
                                     else:
                                         st.info("🔍 No objects in this frame")
                     
-                    time.sleep(0.03)
+                    time.sleep(0.03)  # ~30 FPS display
             else:
                 st.info("⏸️ Detection paused. Click 'Start Detection' to begin real-time video analysis.")
         else:
-            st.info("👆 Click 'AUTO-CONNECT iVCam' or use manual camera setup to start")
+            st.info("👆 Enter RTSP URL and click 'CONNECT RTSP STREAM' to start")
+            
+            # Show sample RTSP URLs
+            with st.expander("📋 Common RTSP URL Formats"):
+                st.code("""
+# iVCam RTSP:
+rtsp://admin:admin@192.168.1.5:1935
+
+# IP Camera formats:
+rtsp://username:password@ip_address:port
+rtsp://ip_address:554/stream1
+rtsp://admin:1234@192.168.1.100:554/h264
+
+# Test public RTSP (for testing):
+rtsp://wowzaec2demo.streamlock.net/vod/mp4:BigBuckBunny_115k.mov
+                """)
     
     with tab2:
         st.header("Real-time Analytics Dashboard")
@@ -495,22 +440,27 @@ def main():
                 st.warning("No data to export yet")
     
     with tab3:
-        st.header("🔧 Setup Guide")
+        st.header("🔧 RTSP Setup Guide")
         
         st.markdown("""
-        ### 🎯 iVCam Troubleshooting
+        ### 🎯 RTSP Stream Configuration
         
-        **If iVCam is not detected:**
-        1. **Restart iVCam** on both phone and computer
-        2. **Try USB connection** (most reliable)
-        3. **Try different camera indexes** (0, 1, 2, 3)
-        4. **Check firewall/VPN** settings
-        5. **Ensure same WiFi** network
+        **Your RTSP URL:** `rtsp://admin:admin@192.168.1.5:1935`
         
-        **Manual Camera Indexes to try:**
-        - **0**: Usually built-in webcam
-        - **1**: Usually iVCam
-        - **2, 3**: Additional cameras
+        **Format:** `rtsp://username:password@ip_address:port`
+        
+        ### 🔧 Troubleshooting RTSP
+        
+        **If connection fails:**
+        1. **Verify RTSP URL** - check IP, port, credentials
+        2. **Check network** - ensure device is on same network
+        3. **Test with VLC** - try opening in VLC media player
+        4. **Firewall** - ensure port 1935 is open
+        
+        **Test with public RTSP stream:**
+        ```
+        rtsp://wowzaec2demo.streamlock.net/vod/mp4:BigBuckBunny_115k.mov
+        ```
         
         ### 🔐 Databricks Setup
         
