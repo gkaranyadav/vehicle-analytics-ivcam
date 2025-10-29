@@ -21,9 +21,17 @@ st.set_page_config(
 
 class VehicleAnalyticsSystem:
     def __init__(self):
-        self.DATABRICKS_JOB_ID = 759244466463781  # Your job ID
-        self.DATABRICKS_HOST = "https://dbc-484c2988-d6e6.cloud.databricks.com"
-        self.API_TOKEN = "dapiyour_token_here"  # 🔴 REPLACE WITH YOUR TOKEN
+        # SAFE: Use Streamlit secrets
+        try:
+            self.API_TOKEN = st.secrets["DATABRICKS_TOKEN"]
+            self.DATABRICKS_HOST = st.secrets["DATABRICKS_HOST"]
+            self.DATABRICKS_JOB_ID = st.secrets["DATABRICKS_JOB_ID"]
+            self.credentials_configured = True
+        except:
+            self.credentials_configured = False
+            self.API_TOKEN = None
+            self.DATABRICKS_HOST = None
+            self.DATABRICKS_JOB_ID = None
         
         self.vehicles_data = []
         self.other_objects_data = []
@@ -72,11 +80,71 @@ class VehicleAnalyticsSystem:
                 return frame
         return None
     
+    def check_credentials(self):
+        """Check if credentials are properly configured"""
+        if not self.credentials_configured:
+            st.error("🔐 Databricks credentials not configured!")
+            st.info("""
+            **Add to `.streamlit/secrets.toml`:**
+            ```
+            DATABRICKS_TOKEN = "your_actual_token_here"
+            DATABRICKS_HOST = "https://dbc-484c2988-d6e6.cloud.databricks.com"
+            DATABRICKS_JOB_ID = 759244466463781
+            ```
+            """)
+            return False
+        return True
+    
+    def test_databricks_connection(self):
+        """Test Databricks Job API connection"""
+        if not self.check_credentials():
+            return False
+            
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.API_TOKEN}",
+                "Content-Type": "application/json"
+            }
+            
+            # Test by getting job info
+            response = requests.get(
+                f"{self.DATABRICKS_HOST}/api/2.1/jobs/get?job_id={self.DATABRICKS_JOB_ID}",
+                headers=headers,
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                job_info = response.json()
+                st.success(f"✅ Databricks Job Connected!")
+                st.write(f"Job Name: {job_info.get('settings', {}).get('name', 'Unknown')}")
+                return True
+            elif response.status_code == 403:
+                st.error("❌ 403 Forbidden - Invalid API Token!")
+                st.info("""
+                **Solutions:**
+                1. Check if token is correct in secrets.toml
+                2. Regenerate token in Databricks
+                3. Ensure token has proper permissions
+                """)
+                return False
+            else:
+                st.error(f"❌ Connection failed: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            st.error(f"❌ Connection error: {e}")
+            return False
+    
     def start_video_processing(self):
         """Start background video processing thread"""
+        if not self.check_credentials():
+            st.error("❌ Cannot start processing - credentials not configured")
+            return False
+            
         self.is_processing = True
         processing_thread = threading.Thread(target=self._process_video_frames, daemon=True)
         processing_thread.start()
+        return True
     
     def stop_video_processing(self):
         """Stop video processing"""
@@ -105,6 +173,9 @@ class VehicleAnalyticsSystem:
     
     def _process_single_frame(self, frame, source_info):
         """Process a single video frame"""
+        if not self.check_credentials():
+            return {"success": False, "error": "Credentials not configured"}
+            
         try:
             # Encode frame to JPEG
             _, img_encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
@@ -182,36 +253,31 @@ class VehicleAnalyticsSystem:
             print(f"Job check error: {e}")
         
         return {"success": True, "processing": "in_progress", "run_id": run_id}
-    
-    def test_databricks_connection(self):
-        """Test Databricks Job API connection"""
-        try:
-            headers = {
-                "Authorization": f"Bearer {self.API_TOKEN}",
-                "Content-Type": "application/json"
-            }
-            
-            # Test by getting job info
-            response = requests.get(
-                f"{self.DATABRICKS_HOST}/api/2.1/jobs/get?job_id={self.DATABRICKS_JOB_ID}",
-                headers=headers,
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                job_info = response.json()
-                st.success(f"✅ Databricks Job Connected!")
-                st.write(f"Job Name: {job_info.get('settings', {}).get('name', 'Unknown')}")
-                return True
-            else:
-                st.error(f"❌ Job connection failed: {response.status_code}")
-                return False
-                
-        except Exception as e:
-            st.error(f"❌ Connection error: {e}")
-            return False
 
 def main():
+    st.markdown("""
+    <style>
+    .main-header {
+        font-size: 2.5rem;
+        color: #1E3A8A;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .success-box {
+        background-color: #D1FAE5;
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 5px solid #10B981;
+    }
+    .warning-box {
+        background-color: #FEF3C7;
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 5px solid #F59E0B;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
     st.markdown('<h1 class="main-header">🚗 ENTERPRISE VEHICLE ANALYTICS - iVCam</h1>', unsafe_allow_html=True)
     
     # Initialize session state
@@ -249,9 +315,9 @@ def main():
         
         with col1:
             if st.button("🔍 Start Detection", type="primary"):
-                st.session_state.detection_active = True
-                system.start_video_processing()
-                st.rerun()
+                if system.start_video_processing():
+                    st.session_state.detection_active = True
+                    st.rerun()
         
         with col2:
             if st.button("🛑 Stop Detection"):
@@ -277,9 +343,16 @@ def main():
         st.write(f"Frames Processed: {st.session_state.frame_counter}")
         st.write(f"Vehicles Detected: {len(system.vehicles_data)}")
         st.write(f"Objects Detected: {len(system.other_objects_data)}")
+        
+        # Credentials status
+        st.header("🔐 Security Status")
+        if system.credentials_configured:
+            st.success("✅ Credentials Configured")
+        else:
+            st.error("❌ Credentials Missing")
     
     # Main content
-    tab1, tab2 = st.tabs(["🎥 Live iVCam Stream", "📊 Analytics Dashboard"])
+    tab1, tab2, tab3 = st.tabs(["🎥 Live iVCam Stream", "📊 Analytics Dashboard", "🔧 Setup Guide"])
     
     with tab1:
         st.header("Live iVCam Video Stream")
@@ -386,6 +459,67 @@ def main():
                 )
             else:
                 st.warning("No data to export yet")
+    
+    with tab3:
+        st.header("🔧 Setup Guide")
+        
+        st.markdown("""
+        ### 📋 Prerequisites
+        
+        1. **iVCam App** installed on your phone
+        2. **Databricks Workspace** with analytics job
+        3. **API Token** with proper permissions
+        
+        ### 🔐 Security Configuration
+        
+        Create `.streamlit/secrets.toml` file:
+        ```toml
+        DATABRICKS_TOKEN = "your_actual_token_here"
+        DATABRICKS_HOST = "https://dbc-484c2988-d6e6.cloud.databricks.com"
+        DATABRICKS_JOB_ID = 759244466463781
+        ```
+        
+        ### 🎯 How to Get API Token
+        
+        1. Go to **Databricks Workspace**
+        2. Click your **username** → **User Settings**
+        3. Go to **Developer** → **Access Tokens**
+        4. **Generate new token**
+        5. **Copy** and paste in secrets.toml
+        
+        ### 📱 iVCam Setup
+        
+        1. Install iVCam on your phone
+        2. Connect phone and computer to same WiFi
+        3. Start iVCam on both devices
+        4. Click **AUTO-CONNECT iVCam** above
+        """)
+        
+        # Quick test section
+        st.subheader("🧪 Quick Test")
+        if st.button("Test System Connectivity"):
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.write("🔐 Credentials:")
+                if system.credentials_configured:
+                    st.success("✅ Configured")
+                else:
+                    st.error("❌ Missing")
+            
+            with col2:
+                st.write("📡 Databricks:")
+                if system.test_databricks_connection():
+                    st.success("✅ Connected")
+                else:
+                    st.error("❌ Failed")
+            
+            with col3:
+                st.write("📱 iVCam:")
+                if st.session_state.ivcam_connected:
+                    st.success("✅ Connected")
+                else:
+                    st.warning("⚠️ Not Connected")
 
 if __name__ == "__main__":
     main()
