@@ -17,7 +17,12 @@ st.set_page_config(
 
 class VehicleAnalyticsSystem:
     def __init__(self):
-        self.DATABRICKS_API_URL = "https://dbc-484c2988-d6e6.cloud.databricks.com/driver-proxy-api/o/0/5003"
+        # Try multiple possible Databricks endpoints
+        self.DATABRICKS_API_URLS = [
+            "https://dbc-484c2988-d6e6.cloud.databricks.com/driver-proxy-api/o/0/5003",
+            "https://dbc-484c2988-d6e6.cloud.databricks.com/api/2.0/serving-endpoints",
+            "https://484c2988-d6e6.cloud.databricks.com/serving-endpoints"
+        ]
         self.vehicles_data = []
         self.other_objects_data = []
         
@@ -40,7 +45,7 @@ class VehicleAnalyticsSystem:
                         for attempt in range(10):
                             ret, frame = cap.read()
                             if ret and frame is not None:
-                                print(f"✅ iVCam FOUND at index {camera_index}!")
+                                st.success(f"✅ iVCam FOUND at index {camera_index}!")
                                 return True, f"✅ iVCam Connected (Index: {camera_index})", cap
                             time.sleep(0.1)
                         
@@ -61,20 +66,87 @@ class VehicleAnalyticsSystem:
                 return frame
         return None
     
+    def test_databricks_connection(self):
+        """Test which Databricks API endpoint works"""
+        test_endpoints = [
+            "/health",
+            "/ping", 
+            "/",
+            "/invocations"
+        ]
+        
+        for api_url in self.DATABRICKS_API_URLS:
+            for endpoint in test_endpoints:
+                try:
+                    full_url = f"{api_url}{endpoint}"
+                    st.write(f"🔍 Testing: {full_url}")
+                    
+                    response = requests.get(full_url, timeout=10)
+                    
+                    if response.status_code == 200:
+                        st.success(f"✅ WORKING API: {full_url}")
+                        return full_url.replace(endpoint, ""), True
+                    else:
+                        st.warning(f"⚠️ {full_url} - Status: {response.status_code}")
+                        
+                except requests.exceptions.RequestException as e:
+                    st.error(f"❌ Failed: {full_url} - Error: {str(e)}")
+                    continue
+        
+        return None, False
+    
     def send_to_databricks(self, image_bytes, source="ivcam"):
-        """Send image to Databricks API"""
+        """Send image to Databricks API with better error handling"""
+        # First test which API works
+        working_url, is_working = self.test_databricks_connection()
+        
+        if not working_url:
+            st.error("🚫 No working Databricks API endpoint found!")
+            st.info("""
+            **Possible Solutions:**
+            1. Check if Databricks workspace is running
+            2. Verify the serving endpoint URL
+            3. Check authentication tokens
+            4. Ensure the model endpoint is active
+            """)
+            return None
+            
         try:
             files = {"image": ("detection.jpg", image_bytes, "image/jpeg")}
             data = {"source": source}
-            response = requests.post(
-                f"{self.DATABRICKS_API_URL}/detect", 
-                files=files, 
-                data=data, 
-                timeout=30
-            )
-            return response.json() if response.status_code == 200 else None
+            
+            # Try different endpoint structures
+            endpoints_to_try = [
+                f"{working_url}/detect",
+                f"{working_url}/predict", 
+                f"{working_url}/invocations",
+                f"{working_url}/api/predict"
+            ]
+            
+            for endpoint in endpoints_to_try:
+                try:
+                    st.write(f"🔄 Trying endpoint: {endpoint}")
+                    response = requests.post(
+                        endpoint, 
+                        files=files, 
+                        data=data, 
+                        timeout=30
+                    )
+                    
+                    if response.status_code == 200:
+                        st.success(f"✅ Success with endpoint: {endpoint}")
+                        return response.json()
+                    else:
+                        st.warning(f"⚠️ Endpoint {endpoint} failed: {response.status_code}")
+                        
+                except Exception as e:
+                    st.error(f"❌ Endpoint {endpoint} error: {e}")
+                    continue
+            
+            return None
+            
         except Exception as e:
-            st.error(f"API Connection Error: {e}")
+            st.error(f"❌ API Connection Error: {e}")
             return None
 
 def main():
@@ -132,20 +204,25 @@ def main():
         
         # Test API connection
         st.header("🔗 API Status")
-        if st.button("🔄 Test Databricks"):
-            try:
-                response = requests.get(f"{system.DATABRICKS_API_URL}/health", timeout=10)
-                if response.status_code == 200:
-                    health_data = response.json()
-                    st.success("✅ Databricks API Connected!")
-                    st.write(f"Detections: {health_data.get('detections_processed', 0)}")
+        if st.button("🔄 Test Databricks Connection"):
+            with st.spinner("Testing all possible API endpoints..."):
+                working_url, is_working = system.test_databricks_connection()
+                if is_working:
+                    st.success(f"✅ Databricks API Connected!")
+                    st.write(f"Working URL: {working_url}")
                 else:
-                    st.error("❌ Databricks API Failed")
-            except Exception as e:
-                st.error(f"❌ Connection Error: {e}")
+                    st.error("❌ All Databricks API endpoints failed!")
+                    
+                    st.info("""
+                    **To Fix This:**
+                    1. Go to your Databricks workspace
+                    2. Check serving endpoints
+                    3. Get the correct API URL
+                    4. Update the code with new URL
+                    """)
     
     # Main content
-    tab1, tab2 = st.tabs(["🎥 Live iVCam", "📁 Image Upload"])
+    tab1, tab2, tab3 = st.tabs(["🎥 Live iVCam", "📁 Image Upload", "🔧 API Setup"])
     
     with tab1:
         st.header("Live iVCam Stream")
@@ -155,6 +232,13 @@ def main():
                 # Live stream container
                 stream_placeholder = st.empty()
                 results_placeholder = st.empty()
+                
+                # Test API first
+                working_url, is_working = system.test_databricks_connection()
+                if not is_working:
+                    st.error("🚫 Cannot start detection - No working API endpoint!")
+                    st.session_state.detection_active = False
+                    st.rerun()
                 
                 last_detection_time = 0
                 frame_count = 0
@@ -170,9 +254,9 @@ def main():
                         stream_placeholder.image(frame_rgb, channels="RGB", use_column_width=True, 
                                                caption=f"iVCam Live - Frame: {frame_count}")
                         
-                        # Auto-detection every 3 seconds
+                        # Auto-detection every 5 seconds
                         current_time = time.time()
-                        if current_time - last_detection_time > 3:
+                        if current_time - last_detection_time > 5:
                             last_detection_time = current_time
                             
                             with results_placeholder.container():
@@ -193,17 +277,8 @@ def main():
                                         
                                         if vehicles or objects:
                                             st.success(f"✅ Detected {len(vehicles)} vehicles, {len(objects)} other objects!")
-                                            
-                                            # Show results
-                                            if vehicles:
-                                                with st.expander(f"🚗 Vehicles ({len(vehicles)})"):
-                                                    for vehicle in vehicles:
-                                                        st.write(f"**{vehicle.get('vehicle_type', 'Unknown')}** - Confidence: {vehicle.get('confidence', 0):.2%}")
-                                            
-                                            if objects:
-                                                with st.expander(f"🌳 Objects ({len(objects)})"):
-                                                    for obj in objects:
-                                                        st.write(f"**{obj.get('object_type', 'Unknown')}** - Confidence: {obj.get('confidence', 0):.2%}")
+                                        else:
+                                            st.info("🔍 No objects detected in this frame")
                     
                     time.sleep(0.1)
             else:
@@ -233,6 +308,47 @@ def main():
                         objects = result['detections']['other_objects']
                         
                         st.success(f"✅ Found {len(vehicles)} vehicles, {len(objects)} other objects!")
+                    else:
+                        st.error("❌ Detection failed. Check API connection.")
+    
+    with tab3:
+        st.header("API Setup Guide")
+        st.info("""
+        **If Databricks API is failing:**
+        
+        1. **Check Databricks Workspace:**
+           - Go to your Databricks workspace
+           - Navigate to Serving Endpoints
+           - Ensure your model endpoint is running
+        
+        2. **Get Correct API URL:**
+           - Copy the serving endpoint URL
+           - It should look like: `https://xxx-yyy.cloud.databricks.com/serving-endpoints/...`
+        
+        3. **Update Authentication:**
+           - Check if API tokens are valid
+           - Update any authentication headers
+        
+        4. **Test Endpoints:**
+           - Use the Test button above
+           - Update the code with working URL
+        """)
+        
+        # Manual API URL input
+        st.subheader("Manual API URL Setup")
+        custom_url = st.text_input("Enter Databricks API URL:")
+        if st.button("Test Custom URL"):
+            if custom_url:
+                try:
+                    response = requests.get(custom_url, timeout=10)
+                    if response.status_code == 200:
+                        st.success("✅ Custom URL works!")
+                        # Update the system with new URL
+                        system.DATABRICKS_API_URLS.insert(0, custom_url)
+                    else:
+                        st.error(f"❌ Custom URL failed: {response.status_code}")
+                except Exception as e:
+                    st.error(f"❌ Custom URL error: {e}")
 
 if __name__ == "__main__":
     main()
