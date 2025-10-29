@@ -1,4 +1,11 @@
-# Byte-compiled / optimized / DLL files
+# .gitignore
+.streamlit/secrets.toml
+*.pyc
+__pycache__/
+.env
+*.jpg
+*.jpeg
+*.png# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
 *$py.class
